@@ -1639,6 +1639,10 @@ else:
     with nav[2]:
         st.markdown('<div class="rg-pill">All Athletes</div>', unsafe_allow_html=True)
 
+        _ath_cols = [
+            "ID", "Name", "Venue", "Batch", "Coach", "Programme", "Week",
+            "Sessions", "Avg Skill Score", "Schedule note",
+        ]
         rows = []
         for aid, ath in athletes.items():
             ath_perf = perf.get(aid, {})
@@ -1658,25 +1662,28 @@ else:
                 "Avg Skill Score": latest_avg,
                 "Schedule note": ath.get("batch_time_note") or "—",
             })
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows, columns=_ath_cols)
         st.dataframe(df.set_index("ID"), use_container_width=True)
 
         # Deep dive
-        sel_ath = st.selectbox("View Athlete Detail", list(athletes.keys()),
-                                format_func=lambda k: athletes[k]["name"])
-        ath = athletes[sel_ath]
-        ath_perf = perf.get(sel_ath,{})
-        if ath_perf:
-            weeks = sorted(ath_perf.keys())
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(radar_chart(ath_perf[weeks[-1]],
-                                             f"{ath['name']} – Latest Skills"), use_container_width=True)
-            with col2:
-                if len(weeks)>1:
-                    rows2 = [{"Week":w.upper(),**ath_perf[w]} for w in weeks]
-                    df2 = pd.DataFrame(rows2)
-                    st.plotly_chart(line_chart(df2,"Week",SKILLS,"Skill Progression"), use_container_width=True)
+        if not athletes:
+            st.info("No athletes yet — register from the Athlete portal or add them in Admin.")
+        else:
+            sel_ath = st.selectbox("View Athlete Detail", list(athletes.keys()),
+                                    format_func=lambda k: athletes[k]["name"])
+            ath = athletes[sel_ath]
+            ath_perf = perf.get(sel_ath,{})
+            if ath_perf:
+                weeks = sorted(ath_perf.keys())
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.plotly_chart(radar_chart(ath_perf[weeks[-1]],
+                                                 f"{ath['name']} – Latest Skills"), use_container_width=True)
+                with col2:
+                    if len(weeks)>1:
+                        rows2 = [{"Week":w.upper(),**ath_perf[w]} for w in weeks]
+                        df2 = pd.DataFrame(rows2)
+                        st.plotly_chart(line_chart(df2,"Week",SKILLS,"Skill Progression"), use_container_width=True)
 
     # ── TAB 4: Coaches ────────────────────────
     with nav[3]:
