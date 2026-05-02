@@ -685,6 +685,26 @@ with st.sidebar:
 # ─────────────────────────────────────────────
 #  HELPERS
 # ─────────────────────────────────────────────
+def _axis_readability(**overrides):
+    """Plotly axis defaults: explicit tick fonts (layout `color` alone can look washed out in Streamlit)."""
+    base = dict(
+        tickfont=dict(color=RG_TEXT, size=13, family="system-ui, Segoe UI, sans-serif"),
+        title=dict(font=dict(color=RG_TEXT, size=13)),
+        gridcolor=RG_BORDER,
+        zerolinecolor=RG_BORDER,
+        showline=True,
+        linewidth=1.5,
+        linecolor=RG_MUTED,
+        mirror=False,
+        ticks="outside",
+        tickcolor=RG_MUTED,
+        ticklen=5,
+        tickwidth=1,
+    )
+    base.update(overrides)
+    return base
+
+
 def radar_chart(scores: dict, title="Skill Radar"):
     categories = list(scores.keys())
     values = list(scores.values())
@@ -696,12 +716,30 @@ def radar_chart(scores: dict, title="Skill Radar"):
         line=dict(color=RG_PURPLE, width=2),
     ))
     fig.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0,10], color=RG_MUTED,
-                                   gridcolor=RG_BORDER, linecolor=RG_BORDER),
-                   angularaxis=dict(color=RG_TEXT, gridcolor=RG_BORDER)),
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font_color=RG_TEXT, title=dict(text=title, font=dict(color=RG_TEXT, size=14)),
-        showlegend=False, margin=dict(l=50,r=50,t=50,b=30), height=320,
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 10],
+                tickfont=dict(color=RG_TEXT, size=12),
+                gridcolor=RG_BORDER,
+                linecolor=RG_MUTED,
+                showline=True,
+            ),
+            angularaxis=dict(
+                tickfont=dict(color=RG_TEXT, size=12),
+                color=RG_TEXT,
+                gridcolor=RG_BORDER,
+                linecolor=RG_MUTED,
+            ),
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=RG_TEXT, family="system-ui, Segoe UI, sans-serif"),
+        font_color=RG_TEXT,
+        title=dict(text=title, font=dict(color=RG_TEXT, size=15)),
+        showlegend=False,
+        margin=dict(l=50, r=50, t=50, b=30),
+        height=320,
     )
     return fig
 
@@ -714,25 +752,50 @@ def line_chart(df, x, y_cols, title="Progress Over Weeks"):
                                   line=dict(color=colors[i % len(colors)], width=2),
                                   marker=dict(size=7)))
     fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font_color=RG_TEXT, title=dict(text=title, font=dict(color=RG_TEXT, size=14)),
-        xaxis=dict(color=RG_MUTED, gridcolor=RG_BORDER),
-        yaxis=dict(color=RG_MUTED, gridcolor=RG_BORDER, range=[0,10]),
-        legend=dict(bgcolor='rgba(0,0,0,0)', font=dict(color=RG_TEXT)),
-        margin=dict(l=10,r=10,t=40,b=10), height=280,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(250,248,252,0.6)",
+        font=dict(color=RG_TEXT, family="system-ui, Segoe UI, sans-serif"),
+        font_color=RG_TEXT,
+        title=dict(text=title, font=dict(color=RG_TEXT, size=15)),
+        xaxis=_axis_readability(),
+        yaxis=_axis_readability(range=[0, 10], dtick=2),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=RG_TEXT, size=12)),
+        margin=dict(l=48, r=16, t=48, b=56),
+        height=280,
     )
     return fig
 
-def bar_chart(labels, values, title="", color=None):
+def bar_chart(labels, values, title="", color=None, y_axis_title=None):
     c = color or RG_ORANGE
-    fig = go.Figure(go.Bar(x=labels, y=values,
-                            marker_color=[c]*len(labels),
-                            marker_line_color='rgba(0,0,0,0)'))
-    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      font_color=RG_TEXT, title=dict(text=title, font=dict(color=RG_TEXT, size=13)),
-                      xaxis=dict(color=RG_MUTED, gridcolor=RG_BORDER),
-                      yaxis=dict(color=RG_MUTED, gridcolor=RG_BORDER),
-                      margin=dict(l=10,r=10,t=40,b=10), height=240)
+    labels = list(labels)
+    vals = list(values)
+    fig = go.Figure(
+        go.Bar(
+            x=labels,
+            y=vals,
+            marker_color=[c] * len(labels),
+            marker_line=dict(color=RG_PURPLE_DEEP, width=0.6),
+        )
+    )
+    vmax = max(vals) if vals else 0
+    # Avoid Plotly's symmetric y-range around 0 (unreadable -0.5…1 ticks when all counts are 0).
+    y_upper = max(1.0, vmax + max(1, int(vmax * 0.12) + (1 if vmax else 0)))
+    y_dtick = 1 if y_upper <= 15 else None
+    yaxis_kw = _axis_readability(range=[0, y_upper], dtick=y_dtick)
+    if y_axis_title:
+        yaxis_kw["title"] = dict(text=y_axis_title, font=dict(color=RG_TEXT, size=13))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(250,248,252,0.75)",
+        font=dict(color=RG_TEXT, family="system-ui, Segoe UI, sans-serif"),
+        font_color=RG_TEXT,
+        title=dict(text=title, font=dict(color=RG_TEXT, size=15)),
+        xaxis=_axis_readability(tickangle=-32, automargin=True),
+        yaxis=yaxis_kw,
+        margin=dict(l=52, r=20, t=52, b=max(96, min(180, 10 + 7 * max((len(str(l)) for l in labels), default=0)))),
+        height=280,
+        bargap=0.22,
+    )
     return fig
 
 def session_checklist_label(done):
@@ -1768,7 +1831,12 @@ else:
         batch_names = {k: v["name"] for k,v in batches.items()}
         sess_counts = {k: sum(1 for s in sessions_data.values() if s.get("batch_id")==k) for k in batches}
         if sess_counts:
-            fig = bar_chart(list(batch_names.values()), list(sess_counts.values()), "Sessions Logged per Batch")
+            fig = bar_chart(
+                list(batch_names.values()),
+                list(sess_counts.values()),
+                "Sessions Logged per Batch",
+                y_axis_title="Sessions",
+            )
             st.plotly_chart(fig, use_container_width=True)
 
         # Overall skill averages
