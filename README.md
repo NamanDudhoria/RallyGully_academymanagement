@@ -6,7 +6,7 @@ Streamlit app for venues, batches, coaches, athletes, sessions, and analytics.
 
 1. **Clone** the repo and open the folder in PowerShell.
 2. **Local secrets** are in `.env` (already gitignored). It should define:
-   - `DATABASE_URL` — Supabase Postgres (use **transaction pooler** on port **6543** if direct `5432` fails on your network).
+   - `DATABASE_URL` — Supabase Postgres. If **`db.<ref>.supabase.co` fails DNS** on Windows, use the **Session pooler** string from **Connect** (host like **`aws-1-<region>.pooler.supabase.com`**, user **`postgres.<ref>`** — copy from the dashboard; do not guess `aws-0` vs `aws-1`).
    - `SUPABASE_URL` and `SUPABASE_KEY` — from Supabase project settings (for optional `supabase-py` use).
 3. **Install & run** (double-click or run in PowerShell):
 

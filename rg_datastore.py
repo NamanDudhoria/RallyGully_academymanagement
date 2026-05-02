@@ -128,8 +128,9 @@ def _pg_connect_params(url: str) -> dict[str, Any]:
     password = unquote(parsed.password) if parsed.password is not None else ""
     q = parse_qs(parsed.query or "")
     sslmode_vals = q.get("sslmode") or []
+    h = host.lower()
     sslmode = sslmode_vals[0] if sslmode_vals else (
-        "require" if "supabase.co" in host.lower() else "prefer"
+        "require" if "supabase.co" in h or "pooler.supabase.com" in h else "prefer"
     )
     return {
         "host": host,
@@ -159,11 +160,17 @@ def _pg_connect():
                 "Could not resolve the database host (DNS / network). Supabase **direct** URLs "
                 "(`db.<ref>.supabase.co`) are often **IPv6-only**; on IPv4-only networks they fail with "
                 "getaddrinfo / Windows 11001.\n\n"
-                "Fix: In Supabase → **Project Settings** → **Database** → **Connection string**, open the "
-                "**Session pooler** (or **Transaction pooler**) tab and copy that URI. "
-                "It uses a **pooler** hostname (e.g. `*.pooler.supabase.com`) and port **6543** (or the port shown). "
-                "Put your password in the URI with the same **URL-encoding** as before (`!` → `%21`). "
-                "Add `?sslmode=require` if not already in the string."
+                "Fix: Supabase → **Connect** → **Session pooler** and copy the full URI. "
+                "It uses user **`postgres.<project-ref>`** and host **`aws-0-` or `aws-1-`<region>.pooler.supabase.com`** "
+                "(not `db.<ref>.supabase.co`). URL-encode special characters in the password (`@` → `%40`). "
+                "Add `?sslmode=require` if missing."
+            ) from e
+        if "tenant" in err and "not found" in err:
+            raise RuntimeError(
+                "Pooler rejected the username/host combination (tenant/user not found). "
+                "Copy the **Session** or **Transaction** pooler URI from Supabase → **Connect** exactly — "
+                "especially the pooler hostname (**`aws-0-...` vs `aws-1-...`** varies by project). "
+                "Username must be **`postgres.<your-project-ref>`** for the shared pooler on `*.pooler.supabase.com`."
             ) from e
         raise
     except (UnicodeError, socket.gaierror, OSError) as e:
