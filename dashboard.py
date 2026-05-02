@@ -1449,14 +1449,7 @@ else:
                 "Admin password: use **Streamlit secrets** or **`RG_ADMIN_PASSWORD`** (plaintext). "
                 "`config.json` may hold a bcrypt `admin_password` hash instead of plaintext."
             )
-        elif src == "default":
-            st.markdown(
-                f'<span style="color:{RG_MUTED};font-size:0.85rem">'
-                "Dev default: set <code>ADMIN_PASSWORD</code> / <code>RG_ADMIN_PASSWORD</code> / "
-                f"<code>config.json</code> for production. Current dev fallback is <code>{DEFAULT_ADMIN_PASSWORD}</code>.</span>",
-                unsafe_allow_html=True,
-            )
-        else:
+        elif src != "default":
             st.caption("Password from: secrets, environment, or hashed/plain `rg_data/config.json`.")
         st.stop()
 
