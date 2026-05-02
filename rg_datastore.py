@@ -1,0 +1,256 @@
+"""
+Academy data layer: PostgreSQL (Supabase-compatible) or local JSON files.
+
+Set **DATABASE_URL** (or **RG_DATABASE_URL** / **SUPABASE_DB_URL**) in the environment
+or in **`.streamlit/secrets.toml`** to use Postgres (Supabase “connection string” / pooler URL).
+Data lives in table `rg_json_documents` (one row per collection), so deploys / git
+never overwrite your database — only app code changes.
+
+Local JSON fallback keeps `RG_DATA_DIR` (default `rg_data/`) behaviour when no URL is set.
+
+Bootstrap (CLI has no Streamlit secrets — pass URL explicitly or set env):
+  PowerShell:  $env:DATABASE_URL="postgresql://..."; python -m rg_datastore --bootstrap
+  Or:        python -m rg_datastore --bootstrap --database-url "postgresql://..."
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+from typing import Any
+from urllib.parse import urlparse
+
+import rg_security
+
+DATA_DIR = os.environ.get("RG_DATA_DIR", "rg_data")
+
+
+
+def ensure_data_dir() -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _path(name: str) -> str:
+    return os.path.join(DATA_DIR, f"{name}.json")
+
+
+def database_url() -> str | None:
+    for key in ("DATABASE_URL", "RG_DATABASE_URL", "SUPABASE_DB_URL"):
+        v = (os.environ.get(key) or "").strip()
+        if v:
+            return v
+    try:
+        import streamlit as st
+
+        sec = st.secrets
+        for key in ("DATABASE_URL", "RG_DATABASE_URL", "SUPABASE_DB_URL"):
+            if key in sec and str(sec[key]).strip():
+                return str(sec[key]).strip()
+    except Exception:
+        pass
+    return None
+
+
+def _load_file(name: str) -> Any:
+    ensure_data_dir()
+    if not os.path.exists(_path(name)):
+        return [] if name == "feedback" else {}
+    with open(_path(name), encoding="utf-8") as f:
+        data = json.load(f)
+    if name == "feedback" and not isinstance(data, list):
+        return []
+    return data
+
+
+def _save_file(name: str, data: Any) -> None:
+    ensure_data_dir()
+    rg_security.atomic_write_json(_path(name), data, default=str)
+
+
+def _assert_real_database_url(url: str) -> None:
+    """Fail fast when someone pastes documentation placeholders instead of a real Supabase URI."""
+    if not (url or "").strip():
+        raise RuntimeError("Database URL is empty.")
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip()
+    if not host or host.upper() == "HOST":
+        raise RuntimeError(
+            'Hostname is missing or is literally the word "HOST". '
+            "Copy the real host from Supabase → **Project Settings** → **Database** "
+            "(it looks like `db.<project-ref>.supabase.co`), not example text from docs."
+        )
+    user = (parsed.username or "").strip()
+    pw = parsed.password or ""
+    if user.upper() == "USER" or pw == "ENCODED_PASSWORD":
+        raise RuntimeError(
+            'URL still contains placeholder **USER** or **ENCODED_PASSWORD**. '
+            "Use the real database user (usually `postgres`) and your actual password "
+            "(URL-encode characters like `[` `]` `@` `#` in the password part)."
+        )
+
+
+def _pg_connect():
+    import psycopg
+
+    url = database_url() or ""
+    _assert_real_database_url(url)
+    try:
+        return psycopg.connect(url, connect_timeout=20)
+    except (UnicodeError, socket.gaierror, OSError) as e:
+        raise RuntimeError(
+            f"Could not open a database connection ({type(e).__name__}). "
+            "Check the host name is copied exactly from Supabase and the password in the URL is URL-encoded."
+        ) from e
+
+
+def _ensure_table(cur) -> None:
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rg_json_documents (
+            collection TEXT PRIMARY KEY,
+            body JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS rg_json_documents_updated_at_idx
+        ON rg_json_documents (updated_at DESC)
+        """
+    )
+
+
+def _load_pg(name: str) -> Any:
+    with _pg_connect() as conn:
+        with conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                "SELECT body FROM rg_json_documents WHERE collection = %s",
+                (name,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return [] if name == "feedback" else {}
+    body = row[0]
+    if name == "feedback" and not isinstance(body, list):
+        return []
+    return body
+
+
+def _save_pg(name: str, data: Any) -> None:
+    import psycopg
+    from psycopg.types.json import Json
+
+    payload = json.loads(json.dumps(data, default=str))
+    with _pg_connect() as conn:
+        with conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """
+                INSERT INTO rg_json_documents (collection, body, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (collection) DO UPDATE SET
+                    body = EXCLUDED.body,
+                    updated_at = NOW()
+                """,
+                (name, Json(payload)),
+            )
+        conn.commit()
+
+
+def load(name: str) -> Any:
+    if database_url():
+        try:
+            return _load_pg(name)
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                "PostgreSQL URL is set but psycopg is not installed. "
+                "Run: pip install 'psycopg[binary]>=3.1'"
+            ) from e
+    return _load_file(name)
+
+
+def save(name: str, data: Any) -> None:
+    if database_url():
+        try:
+            _save_pg(name, data)
+        except ModuleNotFoundError as e:
+            raise RuntimeError(
+                "PostgreSQL URL is set but psycopg is not installed. "
+                "Run: pip install 'psycopg[binary]>=3.1'"
+            ) from e
+    else:
+        _save_file(name, data)
+
+
+def bootstrap_from_json_files() -> int:
+    """
+    Copy each `rg_data/*.json` collection into Postgres if that row is missing.
+    Returns number of rows inserted/updated.
+    """
+    if not database_url():
+        raise RuntimeError(
+            "No database URL. For local bootstrap, either:\n"
+            "  • PowerShell:  $env:DATABASE_URL='postgresql://...'; python -m rg_datastore --bootstrap\n"
+            "  • Or pass:     python -m rg_datastore --bootstrap --database-url \"postgresql://...\"\n"
+            "(Streamlit Cloud secrets are only available inside `streamlit run`, not in this CLI.)"
+        )
+    ensure_data_dir()
+    from psycopg.types.json import Json
+
+    n = 0
+    for fname in os.listdir(DATA_DIR):
+        if not fname.endswith(".json"):
+            continue
+        name = fname[:-5]
+        if not os.path.isfile(_path(name)):
+            continue
+        with open(_path(name), encoding="utf-8") as f:
+            data = json.load(f)
+        if name == "feedback" and not isinstance(data, list):
+            data = []
+        payload = json.loads(json.dumps(data, default=str))
+        with _pg_connect() as conn:
+            with conn.cursor() as cur:
+                _ensure_table(cur)
+                cur.execute(
+                    "SELECT 1 FROM rg_json_documents WHERE collection = %s",
+                    (name,),
+                )
+                if cur.fetchone() is None:
+                    cur.execute(
+                        """
+                        INSERT INTO rg_json_documents (collection, body, updated_at)
+                        VALUES (%s, %s, NOW())
+                        """,
+                        (name, Json(payload)),
+                    )
+                    n += 1
+            conn.commit()
+    return n
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="RallyGully datastore utilities")
+    p.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="Copy JSON files from RG_DATA_DIR into Postgres when rows are missing",
+    )
+    p.add_argument(
+        "--database-url",
+        metavar="URL",
+        help="Postgres connection string for this run (sets DATABASE_URL if not already set)",
+    )
+    args = p.parse_args()
+    if args.database_url and not (os.environ.get("DATABASE_URL") or "").strip():
+        os.environ["DATABASE_URL"] = args.database_url.strip()
+    if args.bootstrap:
+        inserted = bootstrap_from_json_files()
+        print(f"Bootstrap finished. New collections written: {inserted}")
+
+
+if __name__ == "__main__":
+    main()

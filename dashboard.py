@@ -7,8 +7,10 @@ import html
 import json
 import os
 import random
+import re
 
 import rg_security
+from rg_datastore import DATA_DIR, ensure_data_dir, load, save
 
 # ─────────────────────────────────────────────
 #  RallyGully brand (aligned with rallygully.com + wordmark)
@@ -36,7 +38,90 @@ BATCH_TIME_PRESETS = [
     {"batch_id": "B003", "label": "Tuesday – Thursday – Saturday, 5 PM – 6 PM", "program": "3-Day"},
     {"batch_id": "B004", "label": "Tuesday – Thursday – Saturday, 6 PM – 7 PM", "program": "3-Day"},
     {"batch_id": "B005", "label": "M–T–W–Th–F, 6–7 PM (5-day batch)", "program": "5-Day"},
+    # Adults: create batches **B007** / **B008** at a venue (Admin → Batches) so these appear after venue pick.
+    {"batch_id": "B007", "label": "Adults · Weekend · 2 days/week (Sat & Sun — times as posted)", "program": "2-Day"},
+    {"batch_id": "B008", "label": "Adults · Flexible schedule (times agreed with coach)", "program": "Flexible"},
 ]
+
+BATCH_CREATE_EXTRA_NAMES = [
+    "Waitlist / Other (admin assigns slot)",
+]
+
+BATCH_DAY_OPTIONS = [
+    "Mon / Wed / Fri",
+    "Tue / Thu / Sat",
+    "Mon – Fri",
+    "Sat & Sun",
+    "Flexible (set with coach)",
+    "TBD",
+]
+
+BATCH_TIME_OPTIONS = [
+    "5:00 PM – 6:00 PM",
+    "6:00 PM – 7:00 PM",
+    "7:00 AM – 8:00 AM",
+    "8:00 AM – 9:00 AM",
+    "9:00 AM – 10:00 AM",
+    "10:00 AM – 11:00 AM",
+    "11:00 AM – 12:00 PM",
+    "4:00 PM – 5:00 PM",
+    "7:00 PM – 8:00 PM",
+    "TBD",
+    "Agreed per group (adults)",
+]
+
+BATCH_START_OPTIONS = [
+    "Today",
+    "Tomorrow",
+    "In 7 days",
+    "In 14 days",
+    "First day of next month",
+]
+
+BATCH_ID_SELECT_OPTIONS = ["(Auto-generate ID)"] + [f"B{i:03d}" for i in range(1, 21)]
+
+
+def _batch_start_date_from_choice(label: str) -> date:
+    t = date.today()
+    if label == "Tomorrow":
+        return t + timedelta(days=1)
+    if label == "In 7 days":
+        return t + timedelta(days=7)
+    if label == "In 14 days":
+        return t + timedelta(days=14)
+    if label == "First day of next month":
+        if t.month == 12:
+            return date(t.year + 1, 1, 1)
+        return date(t.year, t.month + 1, 1)
+    return t
+
+
+def program_session_totals(program: str) -> tuple[int, int]:
+    """(total_sessions_in_program, sessions_per_week) for athlete progress and coach week math."""
+    p = (program or "").strip()
+    if p == "5-Day":
+        return 20, 5
+    if p == "2-Day":
+        return 8, 2
+    if p == "Flexible":
+        return 24, 2
+    return 12, 3
+
+
+def program_total_sessions(program: str) -> int:
+    return program_session_totals(program)[0]
+
+
+def curriculum_for_program(program: str):
+    """Curriculum dict, or None for Flexible (coach-led, no fixed sequence)."""
+    p = (program or "").strip()
+    if p == "5-Day":
+        return CURRICULUM_5DAY
+    if p == "2-Day":
+        return CURRICULUM_2DAY
+    if p == "Flexible":
+        return None
+    return CURRICULUM_3DAY
 
 
 def _presets_for_venue(venue_id, batches_dict):
@@ -58,29 +143,15 @@ def _venue_option_label(venues_dict, vid):
     return f"{v.get('name', vid)} — {v.get('city', '')}"
 
 # ─────────────────────────────────────────────
-#  DATA LAYER  (flat JSON files, no DB needed)
+#  DATA LAYER → rg_datastore (Postgres if DATABASE_URL set, else JSON in DATA_DIR)
 # ─────────────────────────────────────────────
-DATA_DIR = os.environ.get("RG_DATA_DIR", "rg_data")
-os.makedirs(DATA_DIR, exist_ok=True)
+ensure_data_dir()
 
-def _path(name): return os.path.join(DATA_DIR, f"{name}.json")
 
 def _esc(x) -> str:
     """Escape user-controlled text embedded in st.markdown HTML."""
     return html.escape(str(x or ""), quote=True)
 
-
-def load(name):
-    if not os.path.exists(_path(name)):
-        return [] if name == "feedback" else {}
-    with open(_path(name), encoding="utf-8") as f:
-        data = json.load(f)
-    if name == "feedback" and not isinstance(data, list):
-        return []
-    return data
-
-def save(name, data):
-    rg_security.atomic_write_json(_path(name), data, default=str)
 
 def _migrate_sessions_structure():
     raw = load("sessions")
@@ -414,6 +485,42 @@ CURRICULUM_5DAY = {
         {"session": 20, "focus": "Month-end showcase and celebration",
          "key_drills": "Final tournament: full doubles round-robin with proper scoring",
          "fitness": "Closing ceremony: coach reviews every player's growth, sets personal goal for Month 2"},
+    ],
+}
+
+# 2 sessions / week × 4 weeks (adults / weekend track)
+CURRICULUM_2DAY = {
+    1: [
+        {"session": 1, "focus": "Court orientation, safety, and cooperative rallies (adults)",
+         "key_drills": "Spacing, two-bounce games, simple cross-court feeds at a sustainable pace",
+         "fitness": "Dynamic warmup + light lateral movement suited to adult fitness levels"},
+        {"session": 2, "focus": "Serve and return basics; scorekeeping refresher",
+         "key_drills": "Serve progressions, return-to-net transitions in controlled rallies",
+         "fitness": "Short intervals: kitchen line touches + easy walk-back recovery"},
+    ],
+    2: [
+        {"session": 3, "focus": "Kitchen rules + controlled dinks",
+         "key_drills": "Cross-court dinks, NVZ footwork, first resets under low pressure",
+         "fitness": "Low-impact agility: split-steps and lateral shuffles with rest between sets"},
+        {"session": 4, "focus": "Third-shot choices (drive vs drop introduction)",
+         "key_drills": "Serve–return–third sequences; emphasize decision-making over pace",
+         "fitness": "Partner relay: touch lines then return to a calm rally target"},
+    ],
+    3: [
+        {"session": 5, "focus": "Doubles positioning + communication for adults",
+         "key_drills": "Left/right clarity, simple transitions; intro to stacking only if group is ready",
+         "fitness": "Match-play bursts with walking recovery between games"},
+        {"session": 6, "focus": "Resets vs controlled attack under gentle pressure",
+         "key_drills": "Dink-to-speedup games with agreed ‘go’ signals; reset targets",
+         "fitness": "Core + balance circuit on the court (standing-friendly options)"},
+    ],
+    4: [
+        {"session": 7, "focus": "Structured match play + coach interventions",
+         "key_drills": "Rotating partners round-robin; one tactical theme per round (e.g. middle closes)",
+         "fitness": "Group continuity rally challenge (time-based, adjustable goal)"},
+        {"session": 8, "focus": "Personal goals review + next steps",
+         "key_drills": "Short self-selected weakness block per player (rotating stations)",
+         "fitness": "Cooldown mobility and stretch sequence led by coach"},
     ],
 }
 
@@ -900,9 +1007,21 @@ if portal == "🏃 Athlete":
                         )
                         prog_pick = st.selectbox(
                             "Preferred programme *",
-                            ["3-Day (Mon/Wed/Fri or Tue/Thu/Sat)", "5-Day (Mon–Fri)"],
+                            [
+                                "3-Day (Mon/Wed/Fri or Tue/Thu/Sat)",
+                                "5-Day (Mon–Fri)",
+                                "2-Day adults (weekend / two fixed days)",
+                                "Flexible adults (times with coach)",
+                            ],
                         )
-                        prog = "3-Day" if prog_pick.startswith("3-Day") else "5-Day"
+                        if prog_pick.startswith("3-Day"):
+                            prog = "3-Day"
+                        elif prog_pick.startswith("5-Day"):
+                            prog = "5-Day"
+                        elif prog_pick.startswith("2-Day"):
+                            prog = "2-Day"
+                        else:
+                            prog = "Flexible"
                         rbatch = OTHER_BATCH_ID
                     else:
                         preset = next(p for p in presets_v if p["label"] == batch_choice)
@@ -974,9 +1093,9 @@ if portal == "🏃 Athlete":
     athlete = athletes[aid]
     batch   = batches.get(athlete["batch"], {})
     prog    = athlete.get("program", "3-Day")
-    total_sessions = 12 if prog == "3-Day" else 20
+    total_sessions = program_total_sessions(prog)
     sessions_done  = athlete.get("sessions_attended", 0)
-    pct = int(sessions_done / total_sessions * 100)
+    pct = int(sessions_done / max(total_sessions, 1) * 100)
 
     with st.sidebar:
         st.markdown(f"**{athlete['name']}**")
@@ -1207,24 +1326,43 @@ elif portal == "🎾 Coach":
                 ),
             )
             batch = my_batches[sel_batch_key]
-            prog = batch.get("program","3-Day")
-            curr = CURRICULUM_3DAY if prog == "3-Day" else CURRICULUM_5DAY
+            prog = batch.get("program", "3-Day")
+            curr_map = curriculum_for_program(prog)
 
             # Determine current week based on logged sessions
             my_sessions = [s for s in sessions_data.values() if s.get("batch_id") == sel_batch_key]
             sessions_logged = len(my_sessions)
-            total_s = 12 if prog=="3-Day" else 20
-            sessions_per_week = 3 if prog=="3-Day" else 5
-            current_week = min(4, sessions_logged // sessions_per_week + 1)
+            total_s, sessions_per_week = program_session_totals(prog)
+            current_week = min(4, sessions_logged // max(sessions_per_week, 1) + 1)
             next_session_num = sessions_logged + 1
 
-            # Find the curriculum session
+            # Find the curriculum session (Flexible = coach-led template each time)
             curr_session = None
-            for wk, sess_list in curr.items():
-                for s in sess_list:
-                    if s["session"] == next_session_num:
-                        curr_session = s
-                        curr_week = wk
+            curr_week = current_week
+            if prog == "Flexible":
+                curr_week = min(4, sessions_logged // max(sessions_per_week, 1) + 1)
+                if next_session_num <= total_s:
+                    curr_session = {
+                        "focus": (
+                            "Flexible adults — set **today’s** theme with the group "
+                            "(e.g. serve consistency, resets, transition defense, match tactics)."
+                        ),
+                        "key_drills": (
+                            "Pick drills that match what you agreed for this week. "
+                            "Rotate formats so adults stay engaged (games, situational play, short coaching blocks)."
+                        ),
+                        "fitness": (
+                            "Short scalable block (about 5–10 minutes) suited to this group’s schedule and ability."
+                        ),
+                    }
+            elif curr_map:
+                for wk, sess_list in curr_map.items():
+                    for s in sess_list:
+                        if s["session"] == next_session_num:
+                            curr_session = s
+                            curr_week = wk
+                            break
+                    if curr_session:
                         break
 
             if next_session_num > total_s:
@@ -1591,12 +1729,17 @@ else:
     # ── TAB 2: Batches ────────────────────────
     with nav[1]:
         st.markdown('<div class="rg-pill">Active Batches</div>', unsafe_allow_html=True)
+        st.caption(
+            "Registration shows **Adults · 2-day** / **Adults · flexible** when batches **B007** and **B008** "
+            "exist at that venue — use optional Batch ID when creating them."
+        )
 
         col_b, col_new = st.columns([3,1])
         with col_new:
             with st.expander("➕ New Batch"):
                 with st.form("new_batch_form"):
-                    nb_name  = st.text_input("Batch Name")
+                    _name_choices = [p["label"] for p in BATCH_TIME_PRESETS] + BATCH_CREATE_EXTRA_NAMES
+                    nb_name = st.selectbox("Batch name *", _name_choices)
                     vkeys = [k for k in venues if venues[k].get("active", True)]
                     nb_vid = st.selectbox(
                         "Venue *",
@@ -1606,46 +1749,72 @@ else:
                     )
                     nb_coach = st.selectbox("Coach *", list(coaches.keys()),
                                              format_func=lambda k: coaches[k]["name"])
-                    nb_prog  = st.selectbox("Programme", ["3-Day","5-Day"])
-                    nb_start = st.date_input("Start Date")
-                    nb_days  = st.text_input("Days", "Mon / Wed / Fri")
-                    nb_time  = st.text_input("Time", "7:00 AM")
+                    nb_prog  = st.selectbox(
+                        "Programme *",
+                        ["3-Day", "5-Day", "2-Day", "Flexible"],
+                        help="2-Day / Flexible are common for adults. Link **B007** / **B008** below so registration presets match.",
+                    )
+                    nb_bid_sel = st.selectbox(
+                        "Batch ID",
+                        BATCH_ID_SELECT_OPTIONS,
+                        help="Pick a fixed ID (e.g. B007) to match registration presets, or auto-generate.",
+                    )
+                    nb_start_lbl = st.selectbox("Start date *", BATCH_START_OPTIONS)
+                    nb_days = st.selectbox("Days *", BATCH_DAY_OPTIONS)
+                    nb_time = st.selectbox("Time *", BATCH_TIME_OPTIONS)
                     if st.form_submit_button("Create"):
                         if not vkeys:
                             st.error("Add a venue first.")
-                        elif not (nb_name or "").strip():
-                            st.error("Batch name is required.")
                         else:
                             vnm = venues.get(nb_vid, {}).get("name", "Venue")
-                            bid = f"B{str(len(batches)+1).zfill(3)}"
-                            batches[bid] = {
-                                "name": (nb_name or "").strip(),
-                                "coach_id": nb_coach,
-                                "program": nb_prog,
-                                "start_date": str(nb_start),
-                                "days": nb_days,
-                                "time": nb_time,
-                                "venue": vnm,
-                                "venue_id": nb_vid,
-                                "athlete_ids": [],
-                                "status": "Active",
-                            }
-                            coaches[nb_coach].setdefault("batches", [])
-                            if bid not in coaches[nb_coach]["batches"]:
-                                coaches[nb_coach]["batches"].append(bid)
-                            cvs = set(coaches[nb_coach].get("venue_ids", []))
-                            cvs.add(nb_vid)
-                            coaches[nb_coach]["venue_ids"] = list(cvs)
-                            save("batches", batches)
-                            save("coaches", coaches)
-                            st.success(f"Batch {bid} created!")
-                            st.rerun()
+                            raw_bid = (
+                                ""
+                                if nb_bid_sel.startswith("(Auto)")
+                                else nb_bid_sel.strip().upper()
+                            )
+                            nb_start = _batch_start_date_from_choice(nb_start_lbl)
+                            bid = None
+                            bid_err = None
+                            if raw_bid:
+                                if not re.fullmatch(r"B\d{3}", raw_bid):
+                                    bid_err = "Batch ID must look like B007 (letter B + three digits)."
+                                elif raw_bid in batches:
+                                    bid_err = f"Batch ID {raw_bid} already exists."
+                                else:
+                                    bid = raw_bid
+                            else:
+                                bid = f"B{str(len(batches)+1).zfill(3)}"
+                            if bid_err:
+                                st.error(bid_err)
+                            else:
+                                batches[bid] = {
+                                    "name": (nb_name or "").strip(),
+                                    "coach_id": nb_coach,
+                                    "program": nb_prog,
+                                    "start_date": str(nb_start),
+                                    "days": nb_days,
+                                    "time": nb_time,
+                                    "venue": vnm,
+                                    "venue_id": nb_vid,
+                                    "athlete_ids": [],
+                                    "status": "Active",
+                                }
+                                coaches[nb_coach].setdefault("batches", [])
+                                if bid not in coaches[nb_coach]["batches"]:
+                                    coaches[nb_coach]["batches"].append(bid)
+                                cvs = set(coaches[nb_coach].get("venue_ids", []))
+                                cvs.add(nb_vid)
+                                coaches[nb_coach]["venue_ids"] = list(cvs)
+                                save("batches", batches)
+                                save("coaches", coaches)
+                                st.success(f"Batch {bid} created!")
+                                st.rerun()
 
         for bk, bv in batches.items():
             coach_name = coaches.get(bv.get("coach_id",""),{}).get("name","—")
             n_ath = len(bv.get("athlete_ids",[]))
             prog_sessions = [s for s in sessions_data.values() if s.get("batch_id")==bk]
-            total_s = 12 if bv.get("program")=="3-Day" else 20
+            total_s = program_total_sessions(bv.get("program", "3-Day"))
             pct = int(len(prog_sessions)/total_s*100) if total_s else 0
 
             # Compliance check: all 3 must be checked per session
@@ -1860,21 +2029,35 @@ else:
     with nav[5]:
         st.markdown('<div class="rg-pill">Curriculum Reference</div>', unsafe_allow_html=True)
 
-        prog_sel = st.radio("Programme", ["3-Day","5-Day"], horizontal=True)
-        curr = CURRICULUM_3DAY if prog_sel=="3-Day" else CURRICULUM_5DAY
+        prog_sel = st.radio(
+            "Programme",
+            ["3-Day", "5-Day", "2-Day", "Flexible"],
+            horizontal=True,
+        )
+        curr = curriculum_for_program(prog_sel)
+        week_names = {
+            1: "Court & First Contact",
+            2: "The Kitchen & Soft Game",
+            3: "Patterns & Game Intelligence",
+            4: "Consolidation & Identity",
+        }
 
-        for wk_num, sessions_in_week in curr.items():
-            week_names = {1:"Court & First Contact",2:"The Kitchen & Soft Game",
-                          3:"Patterns & Game Intelligence",4:"Consolidation & Identity"}
-            with st.expander(f"**Week {wk_num} — {week_names[wk_num]}**"):
-                for s in sessions_in_week:
-                    st.markdown(f"""
-                    <div class="curr-cell">
-                    <div class="curr-focus">Session {s['session']}</div>
-                    <div class="curr-label" style="margin-top:4px">Focus</div>
-                    {s['focus']}
-                    <div class="curr-label" style="margin-top:8px">Prescribed Drills</div>
-                    {s['key_drills']}
-                    <div class="curr-label" style="margin-top:8px">Fitness</div>
-                    {s['fitness']}
-                    </div>""", unsafe_allow_html=True)
+        if prog_sel == "Flexible":
+            st.caption(
+                "Flexible adult groups: there is **no fixed session-by-session plan**. "
+                "Coaches agree themes and times with players; logging still uses Rally Gully session standards."
+            )
+        elif curr:
+            for wk_num, sessions_in_week in curr.items():
+                with st.expander(f"**Week {wk_num} — {week_names[wk_num]}**"):
+                    for s in sessions_in_week:
+                        st.markdown(f"""
+                        <div class="curr-cell">
+                        <div class="curr-focus">Session {s['session']}</div>
+                        <div class="curr-label" style="margin-top:4px">Focus</div>
+                        {s['focus']}
+                        <div class="curr-label" style="margin-top:8px">Prescribed Drills</div>
+                        {s['key_drills']}
+                        <div class="curr-label" style="margin-top:8px">Fitness</div>
+                        {s['fitness']}
+                        </div>""", unsafe_allow_html=True)
