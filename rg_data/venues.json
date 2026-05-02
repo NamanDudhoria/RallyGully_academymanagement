@@ -1,14 +1,1 @@
-{
-  "V001": {
-    "name": "South Court",
-    "city": "Academy Hub",
-    "address": "Sector A – main campus",
-    "active": true
-  },
-  "V002": {
-    "name": "North Court",
-    "city": "Academy Hub",
-    "address": "Sector B – satellite",
-    "active": true
-  }
-}
+{}

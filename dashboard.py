@@ -91,41 +91,51 @@ _migrate_sessions_structure()
 
 
 def _ensure_venues_and_batch_links():
-    """Create venues if missing; link batches/athletes/coaches to venue_id."""
+    """Link batches/athletes/coaches to venue_id from names; never inject demo venues."""
     venues = load("venues")
-    if not venues:
-        venues = {
-            "V001": {"name": "South Court", "city": "Academy Hub", "address": "Sector A – main campus", "active": True},
-            "V002": {"name": "North Court", "city": "Academy Hub", "address": "Sector B – satellite", "active": True},
-        }
-        save("venues", venues)
+    if not isinstance(venues, dict):
+        venues = {}
     batches = load("batches")
     coaches = load("coaches")
     athletes = load("athletes")
     changed = False
-    name_to_id = {v["name"].strip().lower(): k for k, v in venues.items()}
+    name_to_id = {
+        v["name"].strip().lower(): k
+        for k, v in venues.items()
+        if isinstance(v, dict) and (v.get("name") or "").strip()
+    }
+    first_vid = next(iter(venues), None)
     for bk, bv in batches.items():
+        if not isinstance(bv, dict):
+            continue
         if not bv.get("venue_id"):
-            guess = name_to_id.get((bv.get("venue") or "").strip().lower()) or "V001"
-            bv["venue_id"] = guess
-            changed = True
+            guess = name_to_id.get((bv.get("venue") or "").strip().lower()) or first_vid
+            if guess:
+                bv["venue_id"] = guess
+                changed = True
         vid = bv.get("venue_id")
-        if vid in venues and bv.get("venue") != venues[vid]["name"]:
+        if vid and vid in venues and isinstance(venues[vid], dict) and bv.get("venue") != venues[vid].get("name"):
             bv["venue"] = venues[vid]["name"]
             changed = True
     for cid, c in coaches.items():
-        if not c.get("venue_ids"):
+        if not isinstance(c, dict):
+            continue
+        if "venue_ids" not in c:
             vset = []
             for bid in c.get("batches", []):
                 if bid in batches and batches[bid].get("venue_id"):
                     vset.append(batches[bid]["venue_id"])
-            c["venue_ids"] = list(dict.fromkeys(vset)) or ["V001"]
+            c["venue_ids"] = list(dict.fromkeys(vset))
             changed = True
     for aid, a in athletes.items():
+        if not isinstance(a, dict):
+            continue
         bid = a.get("batch")
         if bid and bid in batches and not a.get("venue_id"):
-            a["venue_id"] = batches[bid].get("venue_id", "V001")
-            changed = True
+            vbatch = batches[bid].get("venue_id")
+            if vbatch:
+                a["venue_id"] = vbatch
+                changed = True
     if changed:
         save("batches", batches)
         save("coaches", coaches)
