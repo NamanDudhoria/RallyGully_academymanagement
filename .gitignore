@@ -1,0 +1,6 @@
+rg_data/config.json
+.streamlit/secrets.toml
+__pycache__/
+.venv/
+venv/
+*.pyc

@@ -1,0 +1,13 @@
+# RallyGully Academy — production-oriented defaults
+# https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+
+[server]
+maxUploadSize = 15
+enableXsrfProtection = true
+enableCORS = true
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true

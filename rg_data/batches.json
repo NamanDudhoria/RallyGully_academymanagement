@@ -1,0 +1,14 @@
+{
+  "B006": {
+    "name": "Waitlist / Other (admin assigns slot)",
+    "coach_id": "C001",
+    "program": "3-Day",
+    "start_date": "2025-01-01",
+    "days": "TBD",
+    "time": "TBD",
+    "venue": "South Court",
+    "venue_id": "V001",
+    "athlete_ids": [],
+    "status": "Active"
+  }
+}
