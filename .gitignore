@@ -1,4 +1,7 @@
-rg_data/config.json
+# Academy runtime data — keep out of git so pulls/deploys never overwrite live data.
+rg_data/*.json
+!rg_data/seeded.json
+!rg_data/.gitkeep
 .streamlit/secrets.toml
 __pycache__/
 .venv/

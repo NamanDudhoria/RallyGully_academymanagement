@@ -974,7 +974,6 @@ if portal == "🏃 Athlete":
     athlete = athletes[aid]
     batch   = batches.get(athlete["batch"], {})
     prog    = athlete.get("program", "3-Day")
-    curr    = CURRICULUM_3DAY if prog == "3-Day" else CURRICULUM_5DAY
     total_sessions = 12 if prog == "3-Day" else 20
     sessions_done  = athlete.get("sessions_attended", 0)
     pct = int(sessions_done / total_sessions * 100)
@@ -1008,7 +1007,7 @@ if portal == "🏃 Athlete":
         st.caption(f"Your requested schedule: {athlete['batch_time_note']}")
     st.markdown("---")
 
-    nav = st.tabs(["📊 My Dashboard", "📅 My Curriculum", "📝 Coach Feedback"])
+    nav = st.tabs(["📊 My Dashboard", "📝 Coach Feedback"])
 
     # ── TAB 1: Dashboard ──────────────────────
     with nav[0]:
@@ -1070,33 +1069,8 @@ if portal == "🏃 Athlete":
         if not attended_text: attended_text = "No sessions recorded yet."
         st.markdown(f'<div class="rg-card">{attended_text}</div>', unsafe_allow_html=True)
 
-    # ── TAB 2: Curriculum ─────────────────────
+    # ── TAB 2: Coach Feedback ─────────────────
     with nav[1]:
-        st.markdown('<div class="rg-pill">Programme Curriculum</div>', unsafe_allow_html=True)
-        st.markdown(f"**{prog} Beginner Foundations** — 4-Week Plan")
-        st.markdown("")
-
-        current_week = athlete.get("week", 1)
-        for wk_num in range(1, 5):
-            sessions_in_week = curr[wk_num]
-            label = "← **You are here**" if wk_num == current_week else ("✅ Completed" if wk_num < current_week else "🔒 Upcoming")
-            with st.expander(f"**Week {wk_num}** — {['Court & First Contact','The Kitchen & Soft Game','Patterns & Game Intelligence','Consolidation & Identity'][wk_num-1]}  {label}", expanded=(wk_num==current_week)):
-                for s in sessions_in_week:
-                    sn = s['session']
-                    done_marker = "✅ " if sn <= sessions_done else "  "
-                    st.markdown(f"""
-                    <div class="curr-cell">
-                    <div class="curr-focus">{done_marker}Session {sn}</div>
-                    <div class="curr-label" style="margin-top:4px">Focus</div>
-                    {s['focus']}
-                    <div class="curr-label" style="margin-top:8px">Key Drills</div>
-                    {s['key_drills']}
-                    <div class="curr-label" style="margin-top:8px">Fitness</div>
-                    {s['fitness']}
-                    </div>""", unsafe_allow_html=True)
-
-    # ── TAB 3: Coach Feedback ─────────────────
-    with nav[2]:
         st.markdown('<div class="rg-pill">Weekly Coach Feedback</div>', unsafe_allow_html=True)
         st.markdown("Your feedback is **anonymous** — coaches see ratings without names.")
         st.markdown("")
