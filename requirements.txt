@@ -5,3 +5,5 @@ bcrypt>=4.1,<6
 # Bundled libpq (required on Windows). If you see "no pq wrapper", reinstall: pip install "psycopg[binary]>=3.1,<4"
 psycopg[binary]>=3.1,<4
 psycopg-binary>=3.1,<4
+python-dotenv>=1.0,<2
+supabase>=2.0,<3

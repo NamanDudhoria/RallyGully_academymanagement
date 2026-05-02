@@ -3,6 +3,7 @@ rg_data/*.json
 !rg_data/seeded.json
 !rg_data/.gitkeep
 .streamlit/secrets.toml
+.env
 __pycache__/
 .venv/
 venv/

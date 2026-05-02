@@ -8,6 +8,10 @@ never overwrite your database — only app code changes.
 
 Local JSON fallback keeps `RG_DATA_DIR` (default `rg_data/`) behaviour when no URL is set.
 
+For **local** runs, create a **`.env`** file next to this module (project root). It is loaded automatically
+if `python-dotenv` is installed. Put `DATABASE_URL` there (and optional `SUPABASE_URL` / `SUPABASE_KEY`
+for future Supabase client features — the dashboard still uses Postgres via `DATABASE_URL` today).
+
 Bootstrap (CLI has no Streamlit secrets — pass URL explicitly or set env):
   PowerShell:  $env:DATABASE_URL="postgresql://..."; python -m rg_datastore --bootstrap
   Or:        python -m rg_datastore --bootstrap --database-url "postgresql://..."
@@ -19,9 +23,23 @@ import json
 import os
 import socket
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, parse_qs, unquote, urlparse
 
 import rg_security
+
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(os.path.join(_ROOT, ".env"))
+    except ImportError:
+        pass
+
+
+_load_dotenv()
 
 DATA_DIR = os.environ.get("RG_DATA_DIR", "rg_data")
 
@@ -68,18 +86,20 @@ def _save_file(name: str, data: Any) -> None:
     rg_security.atomic_write_json(_path(name), data, default=str)
 
 
-def _assert_real_database_url(url: str) -> None:
+def _assert_real_database_url(parsed: ParseResult) -> None:
     """Fail fast when someone pastes documentation placeholders instead of a real Supabase URI."""
-    if not (url or "").strip():
-        raise RuntimeError("Database URL is empty.")
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").strip()
-    if not host or host.upper() == "HOST":
+    host = (parsed.hostname or "").strip().rstrip(".")
+    if not host or host.upper() == "HOST" or host == "...":
         raise RuntimeError(
-            'Hostname is missing or is literally the word "HOST". '
-            "Copy the real host from Supabase → **Project Settings** → **Database** "
-            "(it looks like `db.<project-ref>.supabase.co`), not example text from docs."
+            'Hostname is missing, is "...", or is literally "HOST". '
+            "Use a full URI from Supabase → **Project Settings** → **Database** "
+            "(host looks like `db.<project-ref>.supabase.co`). "
+            "In PowerShell paste the URL as one line inside **single quotes**."
         )
+    if ".." in host:
+        raise RuntimeError(f"Invalid hostname {host!r} (contains `..`). Check the URL was not truncated.")
+    if "." not in host:
+        raise RuntimeError(f"Invalid hostname {host!r} (expected a DNS name with a dot, e.g. db.xxx.supabase.co).")
     user = (parsed.username or "").strip()
     pw = parsed.password or ""
     if user.upper() == "USER" or pw == "ENCODED_PASSWORD":
@@ -90,17 +110,67 @@ def _assert_real_database_url(url: str) -> None:
         )
 
 
+def _pg_connect_params(url: str) -> dict[str, Any]:
+    """
+    Build libpq keyword args from the URI. Avoids some Windows/psycopg URI→DNS edge cases
+    by passing host/port/user/password explicitly.
+    """
+    u = (url or "").strip().replace("\ufeff", "").replace("\r", "").replace("\n", "")
+    parsed = urlparse(u)
+    if parsed.scheme not in ("postgres", "postgresql"):
+        raise RuntimeError(f"Unsupported URL scheme {parsed.scheme!r}; use postgresql://...")
+    _assert_real_database_url(parsed)
+    host = (parsed.hostname or "").strip().rstrip(".")
+    port = parsed.port or 5432
+    path = (parsed.path or "").strip("/")
+    dbname = path or "postgres"
+    user = unquote(parsed.username) if parsed.username else "postgres"
+    password = unquote(parsed.password) if parsed.password is not None else ""
+    q = parse_qs(parsed.query or "")
+    sslmode_vals = q.get("sslmode") or []
+    sslmode = sslmode_vals[0] if sslmode_vals else (
+        "require" if "supabase.co" in host.lower() else "prefer"
+    )
+    return {
+        "host": host,
+        "port": port,
+        "dbname": dbname,
+        "user": user,
+        "password": password,
+        "sslmode": sslmode,
+        "connect_timeout": 20,
+    }
+
+
 def _pg_connect():
     import psycopg
 
-    url = database_url() or ""
-    _assert_real_database_url(url)
+    url = (database_url() or "").strip()
+    if not url:
+        raise RuntimeError("Database URL is empty.")
+    params = _pg_connect_params(url)
     try:
-        return psycopg.connect(url, connect_timeout=20)
+        # Transaction pooler (port 6543) does not support prepared statements the same way.
+        return psycopg.connect(**params, prepare_threshold=None)
+    except psycopg.OperationalError as e:
+        err = str(e).lower()
+        if "getaddrinfo" in err or "resolve" in err or "11001" in str(e):
+            raise RuntimeError(
+                "Could not resolve the database host (DNS / network). Supabase **direct** URLs "
+                "(`db.<ref>.supabase.co`) are often **IPv6-only**; on IPv4-only networks they fail with "
+                "getaddrinfo / Windows 11001.\n\n"
+                "Fix: In Supabase → **Project Settings** → **Database** → **Connection string**, open the "
+                "**Session pooler** (or **Transaction pooler**) tab and copy that URI. "
+                "It uses a **pooler** hostname (e.g. `*.pooler.supabase.com`) and port **6543** (or the port shown). "
+                "Put your password in the URI with the same **URL-encoding** as before (`!` → `%21`). "
+                "Add `?sslmode=require` if not already in the string."
+            ) from e
+        raise
     except (UnicodeError, socket.gaierror, OSError) as e:
         raise RuntimeError(
-            f"Could not open a database connection ({type(e).__name__}). "
-            "Check the host name is copied exactly from Supabase and the password in the URL is URL-encoded."
+            f"Could not open a database connection ({type(e).__name__}) to host {params['host']!r}. "
+            "Re-copy the URI from Supabase; in PowerShell use single quotes around the URL if `?` causes issues: "
+            '''--database-url 'postgresql://...?sslmode=require' '''
         ) from e
 
 
@@ -242,11 +312,13 @@ def main() -> None:
     p.add_argument(
         "--database-url",
         metavar="URL",
-        help="Postgres connection string for this run (sets DATABASE_URL if not already set)",
+        help="Postgres connection string for this run (always overrides DATABASE_URL when passed)",
     )
     args = p.parse_args()
-    if args.database_url and not (os.environ.get("DATABASE_URL") or "").strip():
-        os.environ["DATABASE_URL"] = args.database_url.strip()
+    if args.database_url:
+        # CLI must win over a stale session $env:DATABASE_URL (e.g. "..." from earlier tests).
+        u = args.database_url.strip().strip("'\"").replace("\ufeff", "")
+        os.environ["DATABASE_URL"] = u
     if args.bootstrap:
         inserted = bootstrap_from_json_files()
         print(f"Bootstrap finished. New collections written: {inserted}")
