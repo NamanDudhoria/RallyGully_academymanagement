@@ -32,6 +32,8 @@ DEFAULT_ADMIN_PASSWORD = "RallyGully_123"
 
 # Batch time options (Academy enrollment form)
 OTHER_BATCH_ID = "B006"
+# Radio option value (must not collide with a real batch id like B006)
+REGISTRATION_OTHER_BATCH_LABEL = "Other (custom — admin assigns a slot)"
 BATCH_TIME_PRESETS = [
     {"batch_id": "B001", "label": "Monday – Wednesday – Friday, 5 PM – 6 PM", "program": "3-Day"},
     {"batch_id": "B002", "label": "Monday – Wednesday – Friday, 6 PM – 7 PM", "program": "3-Day"},
@@ -124,14 +126,19 @@ def curriculum_for_program(program: str):
     return CURRICULUM_3DAY
 
 
-def _presets_for_venue(venue_id, batches_dict):
-    """Batch-time slots that exist at this venue (venue ↔ batch ↔ student)."""
-    out = []
-    for p in BATCH_TIME_PRESETS:
-        b = batches_dict.get(p["batch_id"]) or {}
-        if b.get("venue_id") == venue_id:
-            out.append(p)
-    return out
+def _batches_at_venue(venue_id: str, batches_dict: dict) -> list[str]:
+    """All batch IDs at this venue (admin-created rows), excluding inactive."""
+    ids: list[str] = []
+    for bid, b in batches_dict.items():
+        if not isinstance(b, dict):
+            continue
+        if b.get("venue_id") != venue_id:
+            continue
+        if (b.get("status") or "Active") == "Inactive":
+            continue
+        ids.append(bid)
+    ids.sort(key=lambda x: ((batches_dict.get(x) or {}).get("name") or x, x))
+    return ids
 
 
 def _coaches_at_venue(venue_id, coaches_dict):
@@ -1019,18 +1026,31 @@ if portal == "🏃 Athlete":
                     ch_ids = _coaches_at_venue(rv, coaches_r)
                     ch_lbl = ", ".join(coaches_r[c]["name"] for c in ch_ids) if ch_ids else "—"
                     st.caption(f"**Coaches at this venue:** {ch_lbl}")
-                    presets_v = _presets_for_venue(rv, batches_r)
-                    fixed_labels = [p["label"] for p in presets_v]
-                    schedule_options = fixed_labels + ["Other (custom — admin assigns a slot)"]
+                    batch_ids_here = _batches_at_venue(rv, batches_r)
+                    schedule_options = list(batch_ids_here) + [REGISTRATION_OTHER_BATCH_LABEL]
+
+                    def _reg_batch_radio_label(opt: str) -> str:
+                        if opt == REGISTRATION_OTHER_BATCH_LABEL:
+                            return opt
+                        b = batches_r.get(opt) or {}
+                        bits = [b.get("name") or opt, b.get("program"), b.get("days"), b.get("time")]
+                        detail = " · ".join(x for x in bits if x)
+                        return f"{detail} ({opt})" if detail != opt else f"{opt}"
+
+                    if not batch_ids_here:
+                        st.caption(
+                            "**No batches at this venue yet.** You can still register under “Other” and an admin will assign you."
+                        )
                     batch_choice = st.radio(
-                        "Batch time preference *",
+                        "Batch *",
                         schedule_options,
-                        help="Only slots that exist at your venue are listed. “Other” joins the waitlist for manual assignment.",
+                        format_func=_reg_batch_radio_label,
+                        help="Every batch created for this venue in Admin is listed. “Other” is for schedules not listed yet.",
                     )
                     other_detail = ""
                     rbatch = None
                     prog = "3-Day"
-                    if batch_choice.startswith("Other"):
+                    if batch_choice == REGISTRATION_OTHER_BATCH_LABEL:
                         other_detail = st.text_input(
                             "Describe preferred days & times *",
                             placeholder="e.g. Weekend mornings, 7–8 PM …",
@@ -1054,9 +1074,9 @@ if portal == "🏃 Athlete":
                             prog = "Flexible"
                         rbatch = OTHER_BATCH_ID
                     else:
-                        preset = next(p for p in presets_v if p["label"] == batch_choice)
-                        rbatch = preset["batch_id"]
-                        prog = preset["program"]
+                        bsel = batches_r.get(batch_choice) or {}
+                        rbatch = batch_choice
+                        prog = bsel.get("program") or "3-Day"
                     st.markdown("**3. Optional**")
                     rnotes = st.text_input(
                         "Medical notes, dominant hand, or goals (optional)",
@@ -1080,7 +1100,7 @@ if portal == "🏃 Athlete":
                             need.append(
                                 f"password (min {10 if rg_security.is_production() else 6} characters)"
                             )
-                        if batch_choice.startswith("Other") and not (other_detail or "").strip():
+                        if batch_choice == REGISTRATION_OTHER_BATCH_LABEL and not (other_detail or "").strip():
                             need.append("schedule description")
                         em = (remail or "").strip().lower()
                         if em and any((v.get("email") or "").lower() == em for v in athletes_r.values()):
