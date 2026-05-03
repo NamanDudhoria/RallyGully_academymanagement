@@ -1775,7 +1775,17 @@ else:
             with st.expander("➕ New Batch"):
                 with st.form("new_batch_form"):
                     _name_choices = [p["label"] for p in BATCH_TIME_PRESETS] + BATCH_CREATE_EXTRA_NAMES
-                    nb_name = st.selectbox("Batch name *", _name_choices)
+                    _name_custom_label = "(Type a custom name below)"
+                    nb_name_template = st.selectbox(
+                        "Batch name — quick pick *",
+                        [_name_custom_label] + _name_choices,
+                        help="Choose a preset, or pick “custom” and type the full name in the box below.",
+                    )
+                    nb_name_typed = st.text_input(
+                        "Batch name — type or override",
+                        placeholder="e.g. Mon–Wed–Fri · 7:00–8:00 PM (adults)",
+                        help="If you type anything here, it is used as the batch name. Leave empty to use the quick pick above.",
+                    )
                     vkeys = [k for k in venues if venues[k].get("active", True)]
                     nb_vid = st.selectbox(
                         "Venue *",
@@ -1795,19 +1805,43 @@ else:
                         BATCH_ID_SELECT_OPTIONS,
                         help="Pick a fixed ID (e.g. B007) to match registration presets, or auto-generate.",
                     )
+                    nb_bid_typed = st.text_input(
+                        "Batch ID — type instead (optional)",
+                        placeholder="e.g. B021 — overrides dropdown when set",
+                        help="Must look like B001 (letter B + three digits). Leave blank to use the dropdown.",
+                    )
                     nb_start_lbl = st.selectbox("Start date *", BATCH_START_OPTIONS)
                     nb_days = st.selectbox("Days *", BATCH_DAY_OPTIONS)
+                    nb_days_typed = st.text_input(
+                        "Days — custom (optional)",
+                        placeholder="Uses dropdown if left blank",
+                        help="Type your own if it is not in the list (e.g. Mon & Wed only).",
+                    )
                     nb_time = st.selectbox("Time *", BATCH_TIME_OPTIONS)
+                    nb_time_typed = st.text_input(
+                        "Time — custom (optional)",
+                        placeholder="Uses dropdown if left blank",
+                        help="Type your own window (e.g. 7:30 PM – 8:30 PM).",
+                    )
                     if st.form_submit_button("Create"):
+                        nb_name = (nb_name_typed or "").strip()
+                        if not nb_name and nb_name_template != _name_custom_label:
+                            nb_name = nb_name_template.strip()
                         if not vkeys:
                             st.error("Add a venue first.")
+                        elif not nb_name:
+                            st.error("Enter a batch name: pick a quick template or type a custom name.")
                         else:
                             vnm = venues.get(nb_vid, {}).get("name", "Venue")
-                            raw_bid = (
-                                ""
-                                if nb_bid_sel.startswith("(Auto)")
-                                else nb_bid_sel.strip().upper()
-                            )
+                            nb_days_final = (nb_days_typed or "").strip() or nb_days
+                            nb_time_final = (nb_time_typed or "").strip() or nb_time
+                            bid_typed = (nb_bid_typed or "").strip().upper()
+                            if bid_typed:
+                                raw_bid = bid_typed
+                            elif nb_bid_sel.startswith("(Auto)"):
+                                raw_bid = ""
+                            else:
+                                raw_bid = nb_bid_sel.strip().upper()
                             nb_start = _batch_start_date_from_choice(nb_start_lbl)
                             bid = None
                             bid_err = None
@@ -1828,8 +1862,8 @@ else:
                                     "coach_id": nb_coach,
                                     "program": nb_prog,
                                     "start_date": str(nb_start),
-                                    "days": nb_days,
-                                    "time": nb_time,
+                                    "days": nb_days_final,
+                                    "time": nb_time_final,
                                     "venue": vnm,
                                     "venue_id": nb_vid,
                                     "athlete_ids": [],
