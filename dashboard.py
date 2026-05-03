@@ -905,6 +905,36 @@ def bar_chart(labels, values, title="", color=None, y_axis_title=None):
     )
     return fig
 
+
+def _cache_key_dict(d: dict) -> str:
+    return json.dumps(d, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _cache_key_df(df: pd.DataFrame) -> str:
+    return df.to_json(orient="split", date_format="iso", default_handler=str)
+
+
+@st.cache_data(show_spinner=False, hash_funcs={dict: _cache_key_dict})
+def radar_chart_cached(scores: dict, title: str = "Skill Radar"):
+    return radar_chart(scores, title)
+
+
+@st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _cache_key_df})
+def line_chart_cached(df: pd.DataFrame, x: str, y_cols: tuple[str, ...], title: str = "Progress Over Weeks"):
+    return line_chart(df, x, list(y_cols), title)
+
+
+@st.cache_data(show_spinner=False)
+def bar_chart_cached(
+    labels: tuple[str, ...],
+    values: tuple[float | int, ...],
+    title: str = "",
+    color: str | None = None,
+    y_axis_title: str | None = None,
+):
+    return bar_chart(list(labels), list(values), title, color, y_axis_title)
+
+
 def session_checklist_label(done):
     return "✅" if done else "❌"
 
@@ -1146,8 +1176,10 @@ if portal == "🏃 Athlete":
             with col_left:
                 latest_week = weeks_available[-1]
                 latest_scores = athlete_perf[latest_week]
-                st.plotly_chart(radar_chart(latest_scores, f"Skill Profile – {latest_week.upper()}"),
-                                use_container_width=True)
+                st.plotly_chart(
+                    radar_chart_cached(latest_scores, f"Skill Profile – {latest_week.upper()}"),
+                    use_container_width=True,
+                )
 
             with col_right:
                 if len(weeks_available) > 1:
@@ -1157,7 +1189,7 @@ if portal == "🏃 Athlete":
                         row.update(athlete_perf[wk])
                         rows.append(row)
                     df = pd.DataFrame(rows)
-                    fig = line_chart(df, "Week", SKILLS, "Skill Progression")
+                    fig = line_chart_cached(df, "Week", tuple(SKILLS), "Skill Progression")
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.markdown(f'<div class="rg-card"><div class="curr-label">Progress Chart</div><br><span style="color:{RG_MUTED}">Available after Week 2 data is recorded by your coach.</span></div>', unsafe_allow_html=True)
@@ -1475,14 +1507,18 @@ elif portal == "🎾 Coach":
 
                 col1, col2 = st.columns([1,1])
                 with col1:
-                    st.plotly_chart(radar_chart(latest, f"Latest Skill Profile ({weeks[-1].upper()})"),
-                                    use_container_width=True)
+                    st.plotly_chart(
+                        radar_chart_cached(latest, f"Latest Skill Profile ({weeks[-1].upper()})"),
+                        use_container_width=True,
+                    )
                 with col2:
                     if len(weeks) > 1:
                         rows = [{"Week": w.upper(), **ath_perf[w]} for w in weeks]
                         df = pd.DataFrame(rows)
-                        st.plotly_chart(line_chart(df, "Week", SKILLS, "Skill Progression"),
-                                        use_container_width=True)
+                        st.plotly_chart(
+                            line_chart_cached(df, "Week", tuple(SKILLS), "Skill Progression"),
+                            use_container_width=True,
+                        )
 
                 # Skills table
                 st.markdown("#### Skill Scores by Week")
@@ -1534,10 +1570,10 @@ elif portal == "🎾 Coach":
             c5.metric("Challenge", f"{avg_chall}/10")
 
             # Bar chart by dimension
-            fig = bar_chart(
-                ["Session Energy","Explanation Clarity","Drill Quality","Felt Challenged"],
-                [avg_energy, avg_clarity, avg_drill, avg_chall],
-                "Average Feedback Scores"
+            fig = bar_chart_cached(
+                ("Session Energy", "Explanation Clarity", "Drill Quality", "Felt Challenged"),
+                (avg_energy, avg_clarity, avg_drill, avg_chall),
+                "Average Feedback Scores",
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1554,7 +1590,7 @@ elif portal == "🎾 Coach":
                         "Challenge": round(sum(f["felt_challenged"] for f in wf)/len(wf),1),
                     })
                 df = pd.DataFrame(weekly)
-                fig2 = line_chart(df, "Week", ["Energy","Clarity","Challenge"], "Weekly Feedback Trend")
+                fig2 = line_chart_cached(df, "Week", ("Energy", "Clarity", "Challenge"), "Weekly Feedback Trend")
                 st.plotly_chart(fig2, use_container_width=True)
 
             # Anonymous comments
@@ -1886,13 +1922,18 @@ else:
                 weeks = sorted(ath_perf.keys())
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.plotly_chart(radar_chart(ath_perf[weeks[-1]],
-                                                 f"{ath['name']} – Latest Skills"), use_container_width=True)
+                    st.plotly_chart(
+                        radar_chart_cached(ath_perf[weeks[-1]], f"{ath['name']} – Latest Skills"),
+                        use_container_width=True,
+                    )
                 with col2:
                     if len(weeks)>1:
                         rows2 = [{"Week":w.upper(),**ath_perf[w]} for w in weeks]
                         df2 = pd.DataFrame(rows2)
-                        st.plotly_chart(line_chart(df2,"Week",SKILLS,"Skill Progression"), use_container_width=True)
+                        st.plotly_chart(
+                            line_chart_cached(df2, "Week", tuple(SKILLS), "Skill Progression"),
+                            use_container_width=True,
+                        )
 
     # ── TAB 4: Coaches ────────────────────────
     with nav[3]:
@@ -1974,9 +2015,9 @@ else:
         batch_names = {k: v["name"] for k,v in batches.items()}
         sess_counts = {k: sum(1 for s in sessions_data.values() if s.get("batch_id")==k) for k in batches}
         if sess_counts:
-            fig = bar_chart(
-                list(batch_names.values()),
-                list(sess_counts.values()),
+            fig = bar_chart_cached(
+                tuple(batch_names.values()),
+                tuple(sess_counts.values()),
                 "Sessions Logged per Batch",
                 y_axis_title="Sessions",
             )
@@ -1991,7 +2032,10 @@ else:
                 all_latest.append(latest)
         if all_latest:
             avg_skills = {sk: round(sum(w.get(sk,0) for w in all_latest)/len(all_latest),1) for sk in SKILLS}
-            st.plotly_chart(radar_chart(avg_skills, "Academy-wide Average Skills"), use_container_width=True)
+            st.plotly_chart(
+                radar_chart_cached(avg_skills, "Academy-wide Average Skills"),
+                use_container_width=True,
+            )
 
         # Standards compliance timeline
         comp_rows = []
