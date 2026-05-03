@@ -15,6 +15,9 @@ for future Supabase client features — the dashboard still uses Postgres via `D
 Bootstrap (CLI has no Streamlit secrets — pass URL explicitly or set env):
   PowerShell:  $env:DATABASE_URL="postgresql://..."; python -m rg_datastore --bootstrap
   Or:        python -m rg_datastore --bootstrap --database-url "postgresql://..."
+
+With **Streamlit** + Postgres, ``load()`` fills a per-session snapshot with **one** ``SELECT`` per
+rerun (instead of one connection per collection), and ``save()`` updates the snapshot after write.
 """
 from __future__ import annotations
 
@@ -199,6 +202,76 @@ def _ensure_table(cur) -> None:
     )
 
 
+def _normalize_pg_body(name: str, body: Any) -> Any:
+    """Shape JSONB / decoded values the same as legacy _load_pg."""
+    if body is None:
+        return [] if name == "feedback" else {}
+    if name == "feedback" and not isinstance(body, list):
+        return []
+    return body
+
+
+def _in_streamlit_script() -> bool:
+    """True during an active Streamlit script run (session_state + snapshot cache are safe)."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        return get_script_run_ctx() is not None
+    except Exception:
+        return False
+
+
+_SNAPSHOT_KEY = "_rg_json_documents_snapshot"
+
+
+def _snapshot_get() -> dict[str, Any] | None:
+    if not _in_streamlit_script():
+        return None
+    try:
+        import streamlit as st
+
+        if _SNAPSHOT_KEY not in st.session_state:
+            return None
+        snap = st.session_state[_SNAPSHOT_KEY]
+        return snap if isinstance(snap, dict) else None
+    except Exception:
+        return None
+
+
+def _snapshot_set(data: dict[str, Any]) -> None:
+    import streamlit as st
+
+    st.session_state[_SNAPSHOT_KEY] = data
+
+
+def _snapshot_merge(name: str, data: Any) -> None:
+    """Keep in-memory snapshot aligned with DB after save (same Streamlit run, no extra round-trip)."""
+    if not _in_streamlit_script():
+        return
+    try:
+        import streamlit as st
+
+        if _SNAPSHOT_KEY not in st.session_state:
+            return
+        snap = st.session_state[_SNAPSHOT_KEY]
+        if not isinstance(snap, dict):
+            return
+        payload = json.loads(json.dumps(data, default=str))
+        snap[name] = _normalize_pg_body(name, payload)
+    except Exception:
+        pass
+
+
+def _fetch_all_pg() -> dict[str, Any]:
+    """One connection, one SELECT — used instead of N separate loads per Streamlit rerun."""
+    with _pg_connect() as conn:
+        with conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute("SELECT collection, body FROM rg_json_documents")
+            rows = cur.fetchall()
+    return {str(c): _normalize_pg_body(str(c), b) for c, b in rows}
+
+
 def _load_pg(name: str) -> Any:
     with _pg_connect() as conn:
         with conn.cursor() as cur:
@@ -210,14 +283,10 @@ def _load_pg(name: str) -> Any:
             row = cur.fetchone()
     if row is None:
         return [] if name == "feedback" else {}
-    body = row[0]
-    if name == "feedback" and not isinstance(body, list):
-        return []
-    return body
+    return _normalize_pg_body(name, row[0])
 
 
 def _save_pg(name: str, data: Any) -> None:
-    import psycopg
     from psycopg.types.json import Json
 
     payload = json.loads(json.dumps(data, default=str))
@@ -240,6 +309,17 @@ def _save_pg(name: str, data: Any) -> None:
 def load(name: str) -> Any:
     if database_url():
         try:
+            snap = _snapshot_get()
+            if snap is not None:
+                if name in snap:
+                    return snap[name]
+                return [] if name == "feedback" else {}
+            if _in_streamlit_script():
+                snap = _fetch_all_pg()
+                _snapshot_set(snap)
+                if name in snap:
+                    return snap[name]
+                return [] if name == "feedback" else {}
             return _load_pg(name)
         except ModuleNotFoundError as e:
             raise RuntimeError(
@@ -253,6 +333,7 @@ def save(name: str, data: Any) -> None:
     if database_url():
         try:
             _save_pg(name, data)
+            _snapshot_merge(name, data)
         except ModuleNotFoundError as e:
             raise RuntimeError(
                 "PostgreSQL URL is set but psycopg is not installed. "
@@ -278,20 +359,20 @@ def bootstrap_from_json_files() -> int:
     from psycopg.types.json import Json
 
     n = 0
-    for fname in os.listdir(DATA_DIR):
-        if not fname.endswith(".json"):
-            continue
-        name = fname[:-5]
-        if not os.path.isfile(_path(name)):
-            continue
-        with open(_path(name), encoding="utf-8") as f:
-            data = json.load(f)
-        if name == "feedback" and not isinstance(data, list):
-            data = []
-        payload = json.loads(json.dumps(data, default=str))
-        with _pg_connect() as conn:
-            with conn.cursor() as cur:
-                _ensure_table(cur)
+    with _pg_connect() as conn:
+        with conn.cursor() as cur:
+            _ensure_table(cur)
+            for fname in os.listdir(DATA_DIR):
+                if not fname.endswith(".json"):
+                    continue
+                name = fname[:-5]
+                if not os.path.isfile(_path(name)):
+                    continue
+                with open(_path(name), encoding="utf-8") as f:
+                    data = json.load(f)
+                if name == "feedback" and not isinstance(data, list):
+                    data = []
+                payload = json.loads(json.dumps(data, default=str))
                 cur.execute(
                     "SELECT 1 FROM rg_json_documents WHERE collection = %s",
                     (name,),
@@ -305,7 +386,7 @@ def bootstrap_from_json_files() -> int:
                         (name, Json(payload)),
                     )
                     n += 1
-            conn.commit()
+        conn.commit()
     return n
 
 
